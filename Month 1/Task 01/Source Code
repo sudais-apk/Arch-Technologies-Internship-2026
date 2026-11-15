@@ -1,0 +1,257 @@
+"""
+Titanic Survival Classification
+===============================
+Goal: build a machine learning model that predicts survival from passenger
+features such as age, gender, ticket class and fare.
+
+Dataset: Kaggle Titanic (train.csv) -> https://www.kaggle.com/c/titanic/data
+Place train.csv in the same folder as this file (or change DATA_PATH below).
+
+Run:
+    pip install pandas numpy matplotlib seaborn scikit-learn
+    python titanic_survival_classification.py
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+    roc_curve,
+)
+
+DATA_PATH = "train.csv"
+RANDOM_STATE = 42
+
+
+# ---------------------------------------------------------------------------
+# 1. Load data
+# ---------------------------------------------------------------------------
+df = pd.read_csv(DATA_PATH)
+
+print("Shape:", df.shape)            # 891 rows, 12 columns
+print(df.head())
+
+
+# ---------------------------------------------------------------------------
+# 2. Explore & check data quality
+# ---------------------------------------------------------------------------
+print("\nMissing values:\n", df.isnull().sum())     # Cabin 687, Age 177, Embarked 2
+print("\nDuplicated rows:", df.duplicated().sum())  # 0
+
+# Memory-friendly data types
+df["Survived"] = df["Survived"].astype("int8")
+df["Pclass"] = df["Pclass"].astype("int8")
+df["Sex"] = df["Sex"].astype("category")
+df["Embarked"] = df["Embarked"].astype("category")
+print("\nData types:\n", df.dtypes)
+
+# Extra columns used only for EDA (Title from Name, Deck from Cabin)
+df["Title"] = df["Name"].str.extract(r" ([A-Za-z]+)\.", expand=False)
+df["Deck"] = df["Cabin"].str[0]
+
+
+# ---------------------------------------------------------------------------
+# 3. EDA - Univariate analysis (each feature vs Survived)
+# ---------------------------------------------------------------------------
+# Survived vs Sex
+print(pd.crosstab(df["Survived"], df["Sex"], normalize="columns") * 100)
+sns.heatmap(pd.crosstab(df["Survived"], df["Sex"], normalize="columns") * 100)
+plt.title("Survived vs Sex (%)")
+plt.show()
+
+# Survived vs Fare
+sns.barplot(data=df, x="Survived", y="Fare")
+plt.title("Survived vs Fare")
+plt.show()
+
+sns.violinplot(data=df, x="Fare", y="Survived", orient="h")
+plt.title("Survived vs Fare (distribution)")
+plt.show()
+
+# Survived vs Age
+df[df["Survived"] == 1]["Age"].plot(kind="kde", label="Survived")
+df[df["Survived"] == 0]["Age"].plot(kind="kde", label="NOT Survived")
+plt.legend()
+plt.title("Survived vs Age")
+plt.show()
+
+# Survived vs Pclass
+print(pd.crosstab(df["Pclass"], df["Survived"], normalize="columns") * 100)
+sns.heatmap(pd.crosstab(df["Pclass"], df["Survived"], normalize="columns") * 100)
+plt.title("Survived vs Pclass (%)")
+plt.show()
+
+# Survived vs Parch
+print(pd.crosstab(df["Parch"], df["Survived"]))
+sns.heatmap(pd.crosstab(df["Survived"], df["Parch"], normalize="columns") * 100)
+plt.title("Survived vs Parch (%)")
+plt.show()
+
+# Survived vs SibSp
+print(pd.crosstab(df["SibSp"], df["Survived"]))
+sns.heatmap(pd.crosstab(df["Survived"], df["SibSp"], normalize="columns") * 100)
+plt.title("Survived vs SibSp (%)")
+plt.show()
+
+# Survived vs Embarked
+print(pd.crosstab(df["Survived"], df["Embarked"], normalize="columns") * 100)
+sns.heatmap(pd.crosstab(df["Survived"], df["Embarked"]))
+plt.title("Survived vs Embarked")
+plt.show()
+
+# Survived vs Title
+print(pd.crosstab(df["Survived"], df["Title"], normalize="columns") * 100)
+
+# Survived vs Deck
+print(pd.crosstab(df["Survived"], df["Deck"], normalize="columns") * 100)
+sns.heatmap(pd.crosstab(df["Survived"], df["Deck"]))
+plt.title("Survived vs Deck")
+plt.show()
+
+
+# ---------------------------------------------------------------------------
+# 4. EDA - Multivariate analysis (correlation)
+# ---------------------------------------------------------------------------
+corr = df[["PassengerId", "Age", "Fare"]].corr()
+print(corr)
+sns.heatmap(corr, annot=True)
+plt.title("Correlation heatmap")
+plt.show()
+
+
+# ---------------------------------------------------------------------------
+# 5. Data cleaning & preprocessing
+# ---------------------------------------------------------------------------
+# Age: fill with median (skewed distribution, median is robust to outliers)
+df["Age"] = df["Age"].fillna(df["Age"].median())
+
+# Embarked: fill the 2 missing values with the most frequent port (mode)
+df["Embarked"] = df["Embarked"].astype(object)
+df["Embarked"] = df["Embarked"].fillna(df["Embarked"].mode()[0])
+
+# Feature engineering: FamilySize = SibSp + Parch + 1
+df["FamilySize"] = df["SibSp"] + df["Parch"] + 1
+
+# Drop Cabin (~77% missing) and identifier-like columns,
+# plus the EDA-only helper columns
+df = df.drop(columns=["Cabin", "PassengerId", "Name", "Ticket", "Title", "Deck"])
+
+# Encode Sex: male = 0, female = 1
+df["Sex"] = df["Sex"].astype(object).map({"male": 0, "female": 1})
+
+# One-hot encode Embarked (drop_first=True avoids the dummy variable trap)
+df = pd.get_dummies(df, columns=["Embarked"], drop_first=True, dtype=int)
+
+print("\nMissing values after cleaning:", df.isnull().sum().sum())  # 0
+print(df.head())
+
+# Correlation heatmap after data cleaning
+plt.figure(figsize=(9, 7))
+sns.heatmap(df.corr(), annot=True, fmt=".2f", cmap="coolwarm")
+plt.title("Correlation heatmap after data cleaning")
+plt.show()
+
+
+# ---------------------------------------------------------------------------
+# 6. Train / test split (80 / 20)
+# ---------------------------------------------------------------------------
+X = df.drop(columns="Survived")
+y = df["Survived"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y
+)
+print("\nTrain rows:", X_train.shape[0], "| Test rows:", X_test.shape[0])  # 712 / 179
+
+# Scaling (fit on training data only) - used for Logistic Regression
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+
+# ---------------------------------------------------------------------------
+# 7. Model training
+# ---------------------------------------------------------------------------
+log_reg = LogisticRegression(max_iter=1000)
+log_reg.fit(X_train_scaled, y_train)
+
+rf = RandomForestClassifier(
+    n_estimators=100,
+    max_depth=12,
+    min_samples_leaf=4,
+    random_state=RANDOM_STATE,
+)
+rf.fit(X_train, y_train)
+
+
+# ---------------------------------------------------------------------------
+# 8. Model evaluation
+# ---------------------------------------------------------------------------
+def evaluate(name, y_true, y_pred, y_prob):
+    return {
+        "Model": name,
+        "Accuracy": round(accuracy_score(y_true, y_pred), 3),
+        "Precision": round(precision_score(y_true, y_pred), 3),
+        "Recall": round(recall_score(y_true, y_pred), 3),
+        "F1": round(f1_score(y_true, y_pred), 3),
+        "ROC-AUC": round(roc_auc_score(y_true, y_prob), 3),
+    }
+
+
+lr_pred = log_reg.predict(X_test_scaled)
+lr_prob = log_reg.predict_proba(X_test_scaled)[:, 1]
+
+rf_pred = rf.predict(X_test)
+rf_prob = rf.predict_proba(X_test)[:, 1]
+
+results = pd.DataFrame(
+    [
+        evaluate("Logistic Regression", y_test, lr_pred, lr_prob),
+        evaluate("Random Forest", y_test, rf_pred, rf_prob),
+    ]
+).set_index("Model")
+print("\nModel comparison on the test set:\n", results)
+
+# Confusion matrices
+fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+for ax, name, pred in zip(axes, ["Logistic Regression", "Random Forest"], [lr_pred, rf_pred]):
+    ConfusionMatrixDisplay(confusion_matrix(y_test, pred),
+                           display_labels=["Not Survived", "Survived"]).plot(ax=ax, colorbar=False)
+    ax.set_title(name)
+plt.suptitle("Confusion Matrix on Test Data")
+plt.tight_layout()
+plt.show()
+
+# ROC curves
+plt.figure(figsize=(6, 5))
+for name, prob in [("Logistic Regression", lr_prob), ("Random Forest", rf_prob)]:
+    fpr, tpr, _ = roc_curve(y_test, prob)
+    plt.plot(fpr, tpr, label=f"{name} (AUC = {roc_auc_score(y_test, prob):.3f})")
+plt.plot([0, 1], [0, 1], "k--", label="Random guess")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve")
+plt.legend()
+plt.show()
+
+
+# ---------------------------------------------------------------------------
+# 9. Conclusion
+# ---------------------------------------------------------------------------
+# A model using gender, age, ticket class, fare and family size predicts Titanic
+# survival with about 80% accuracy and an ROC-AUC of roughly 0.83-0.84.
+# Gender and ticket class were the dominant factors, consistent with the
+# "women and children first" policy and the advantage of upper-class passengers.
